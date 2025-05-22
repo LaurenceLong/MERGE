@@ -30,7 +30,7 @@ def main():
     parser.add_argument(
         "--max_length",
         type=int,
-        default=128,  # 应与训练时的 max_position_embeddings 类似
+        default=128,  # 应与训练时的 max_seq_len 类似
         help="输入文本的最大处理长度。"
     )
     args = parser.parse_args()

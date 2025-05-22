@@ -17,7 +17,7 @@ class MERGEModelConfig(PretrainedConfig):
     num_hidden_layers_encoder: int = 6  # 用于主 MLM encoder
     num_hidden_layers_default: int = 6  # 默认的decoder/encoder层数
     num_attention_heads: int = 12
-    max_position_embeddings: int = 256  # 最大序列长度
+    max_seq_len: int = 256              # 最大序列长度
     dropout_prob: float = 0.1           # Transformer层中的dropout概率
     layer_norm_eps: float = 1e-5        # LayerNorm (或RMSNorm) 的 epsilon
 
@@ -30,7 +30,6 @@ class MERGEModelConfig(PretrainedConfig):
     adam_epsilon: float = 1e-8
     warmup_steps: int = 1000 # 注意：train.py 中使用的是 warmup_steps_ratio
     max_train_steps: int = 10_000
-    batch_size_train: int = 128         # Accelerator 会处理实际的每设备batch大小
 
     # MERGE 特定参数
     keep_ratio_start: float = 0.7

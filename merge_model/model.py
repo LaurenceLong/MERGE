@@ -35,9 +35,9 @@ class MERGELanguageModel(PreTrainedModel):
         # 3. Decoder-2: Pointer-Inserter (用于插空阶段)，开启因果mask
         # 此Decoder用于在骨架的基础上，决定在哪些"缝隙"中插入MASK token
         self.pointer_inserter_decoder = LlamaDecoder(config, causal=True)
-        # 输出维度: max_position_embeddings (代表可能的插入位置/缝隙数量) + 1 (可能代表"不在此处插入"或缝隙长度)
-        # 原始代码是 cfg.max_len + 1，这里对应 config.max_position_embeddings + 1
-        self.pointer_logits_head = nn.Linear(config.hidden_size, config.max_position_embeddings + 1)
+        # 输出维度: max_seq_len (代表可能的插入位置/缝隙数量) + 1 (可能代表"不在此处插入"或缝隙长度)
+        # 原始代码是 cfg.max_len + 1，这里对应 config.max_seq_len + 1
+        self.pointer_logits_head = nn.Linear(config.hidden_size, config.max_seq_len + 1)
 
         # 4. 主Encoder: Masked Language Modeling (使用LlamaEncoder结构)
         # 这个Encoder将从头开始训练，用于对损坏的输入进行MLM预测
@@ -186,7 +186,7 @@ class MERGELanguageModel(PreTrainedModel):
         pointer_logits = self.pointer_logits_head(pointer_decoder_hidden_states)
 
         # 对指针logits应用Gumbel-Softmax，得到在何处插入的软概率
-        # softmax作用在最后一个维度 (max_position_embeddings + 1)
+        # softmax作用在最后一个维度 (max_seq_len + 1)
         gumbel_for_ptr = gumbel_noise(pointer_logits.shape, device)
         # (B, max_skel_L, max_pos_embed + 1)
         pointer_probs = F.softmax((pointer_logits + gumbel_for_ptr) / current_temperature, dim=-1)
@@ -222,12 +222,12 @@ class MERGELanguageModel(PreTrainedModel):
                 avg_insertion_slot_probs = pointer_probs[b_idx, :current_skeleton_len, :].mean(
                     dim=0)  # (max_pos_embed + 1,)
             else:  # 如果骨架为空（理论上已处理，但做防御）
-                avg_insertion_slot_probs = torch.zeros(self.config.max_position_embeddings + 1, device=device)
+                avg_insertion_slot_probs = torch.zeros(self.config.max_seq_len + 1, device=device)
 
             # c. 选择top-k个插入位置
             # `num_masks_to_insert` 是要插入的 MASK 数量
             # `avg_insertion_slot_probs` 是每个"缝隙"的得分
-            # 缝隙数量是 `max_position_embeddings + 1`
+            # 缝隙数量是 `max_seq_len + 1`
             num_available_slots = avg_insertion_slot_probs.size(0)
             actual_num_masks_to_insert = min(num_masks_to_insert, num_available_slots)  # 不能插入超过可用缝隙的数量
 

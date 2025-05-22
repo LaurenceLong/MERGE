@@ -39,11 +39,11 @@ def parse_training_arguments():
     # 模型配置参数 (允许命令行覆盖部分默认值)
     # MERGEModelConfig中定义的参数都可以通过命令行传入，例如 --vocab_size 50000
     # 这里只列举几个示例，实际可以通过 **vars(args) 传递给config
-    parser.add_argument("--max_position_embeddings", type=int, help="模型最大序列长度。")
+    parser.add_argument("--max_seq_len", type=int, help="模型最大序列长度。")
 
     # 训练过程参数
     parser.add_argument("--max_train_steps", type=int, default=10000, help="总训练步数。")
-    parser.add_argument("--batch_size_train_per_device", type=int, default=32, help="每个GPU/CPU的训练批次大小。")
+    parser.add_argument("--batch_size_train_per_device", type=int, default=16, help="每个GPU/CPU的训练批次大小。")
     parser.add_argument("--learning_rate_main", type=float, help="主模型部分的学习率。")
     parser.add_argument("--learning_rate_encoder", type=float, help="MLM Encoder部分的学习率 (如果不同)。")
     parser.add_argument("--weight_decay", type=float, help="AdamW优化器的权重衰减。")
@@ -51,7 +51,7 @@ def parse_training_arguments():
     parser.add_argument("--adam_beta1", type=float, default=0.9)
     parser.add_argument("--adam_beta2", type=float, default=0.999)
     parser.add_argument("--adam_epsilon", type=float, default=1e-8)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="梯度累积步数。")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="梯度累积步数。")
 
 
     # 路径和日志参数
@@ -165,7 +165,7 @@ def main():
         batch_size=args.batch_size_train_per_device,
         shuffle=True,
         collate_fn=lambda batch_items: collate_fn_for_merge(
-            batch_items, tokenizer, model_config.max_position_embeddings, args.text_column
+            batch_items, tokenizer, model_config.max_seq_len, args.text_column
         ),
         num_workers=4, # 根据系统调整
         pin_memory=True if accelerator.device.type == 'cuda' else False,
@@ -175,7 +175,7 @@ def main():
             eval_dataset,
             batch_size=args.batch_size_train_per_device * 2, # 验证时batch可以大一些
             collate_fn=lambda batch_items: collate_fn_for_merge(
-                batch_items, tokenizer, model_config.max_position_embeddings, args.text_column
+                batch_items, tokenizer, model_config.max_seq_len, args.text_column
             ),
             num_workers=4,
             pin_memory=True if accelerator.device.type == 'cuda' else False,
@@ -452,10 +452,10 @@ def main():
         # 这个演示需要适配MLM模型的特性，例如对输入进行mask然后预测被mask的词
         logger.info("运行快速MLM演示...")
         if len(train_dataset) > 0: # 从训练集中取一个样本
-            sample_text_original = train_dataset[0][args.text_column][:model_config.max_position_embeddings - 20] # 截断以防超长
+            sample_text_original = train_dataset[0][args.text_column][:model_config.max_seq_len - 20] # 截断以防超长
             
             # 准备输入，并手动mask一些token
-            inputs = tokenizer(sample_text_original, return_tensors="pt", truncation=True, max_length=model_config.max_position_embeddings)
+            inputs = tokenizer(sample_text_original, return_tensors="pt", truncation=True, max_length=model_config.max_seq_len)
             input_ids_for_demo = inputs.input_ids.clone().to(accelerator.device) # 确保在正确设备上
             
             # 随机选择一些token进行mask (非特殊token)

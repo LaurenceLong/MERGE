@@ -82,7 +82,7 @@ def main():
         log_with="tensorboard", # 启用tensorboard日志
         project_config=accelerator_project_config,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        # mixed_precision="fp16" # 如果需要，可以启用混合精度训练
+        mixed_precision="fp16" # 如果需要，可以启用混合精度训练
     )
 
     # 设置日志级别，确保只在主进程打印过多信息
@@ -282,7 +282,7 @@ def main():
         for step, batch in enumerate(train_dataloader):
             if completed_steps >= args.max_train_steps:
                 break
-            
+
             with accelerator.accumulate(model): # 处理梯度累积
                 # 模型forward需要 current_train_step 用于退火
                 outputs = model(
@@ -317,7 +317,7 @@ def main():
 
                 accelerator.log(log_metrics, step=completed_steps)
                 progress_bar.set_postfix(train_loss=f"{log_metrics['train_loss']:.4f}", lr=f"{log_metrics['learning_rate']:.2e}")
-            
+
             # 定期保存检查点
             if completed_steps % args.save_every_steps == 0 and completed_steps > 0:
                 accelerator.wait_for_everyone()
@@ -435,7 +435,7 @@ def main():
         logger.info(f"保存最终模型到: {final_model_path}")
         unwrapped_model = accelerator.unwrap_model(model) # 获取原始模型
         unwrapped_model.save_pretrained(final_model_path) # 保存模型权重和配置文件(model_config.json)
-        
+
         logger.info(f"保存最终tokenizer到: {final_model_path}")
         tokenizer.save_pretrained(final_model_path) # 在模型目录中也保存一份tokenizer
 
@@ -453,11 +453,11 @@ def main():
         logger.info("运行快速MLM演示...")
         if len(train_dataset) > 0: # 从训练集中取一个样本
             sample_text_original = train_dataset[0][args.text_column][:model_config.max_seq_len - 20] # 截断以防超长
-            
+
             # 准备输入，并手动mask一些token
             inputs = tokenizer(sample_text_original, return_tensors="pt", truncation=True, max_length=model_config.max_seq_len)
             input_ids_for_demo = inputs.input_ids.clone().to(accelerator.device) # 确保在正确设备上
-            
+
             # 随机选择一些token进行mask (非特殊token)
             num_tokens_to_mask = max(1, int(input_ids_for_demo.size(1) * 0.15)) # mask 15%
             # 获取非特殊token的索引
@@ -465,7 +465,7 @@ def main():
                                   (input_ids_for_demo[0] != tokenizer.sep_token_id) & \
                                   (input_ids_for_demo[0] != tokenizer.pad_token_id) & \
                                   (input_ids_for_demo[0] != tokenizer.mask_token_id) # 避免重复mask
-            
+
             candidate_indices_to_mask = non_special_indices.nonzero(as_tuple=False).squeeze()
             if candidate_indices_to_mask.numel() > num_tokens_to_mask:
                 perm = torch.randperm(candidate_indices_to_mask.size(0), device=accelerator.device)
@@ -482,7 +482,7 @@ def main():
                 # 模型forward需要嵌入，而不是ids
                 # 注意：MERGELanguageModel的forward需要current_train_step，评估时可以设为max_steps
                 demo_attention_mask = (input_ids_for_demo != tokenizer.pad_token_id).long()
-                
+
                 # 直接调用MLM Encoder部分进行预测 (如果只想看MLM能力)
                 # 1. 获取嵌入
                 demo_word_embeds = unwrapped_model.word_embeddings(input_ids_for_demo)
@@ -499,9 +499,9 @@ def main():
             filled_ids = input_ids_for_demo.clone()
             if indices_to_mask is not None and indices_to_mask.numel() > 0:
                 filled_ids[0, indices_to_mask] = predicted_token_ids[0, indices_to_mask]
-            
+
             reconstructed_text_demo = tokenizer.decode(filled_ids[0], skip_special_tokens=True) # 跳过特殊token看纯文本
-            
+
             demo_output_data = {
                 "original_input": sample_text_original,
                 "masked_input_text (with special tokens)": masked_text_input,

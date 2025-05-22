@@ -43,7 +43,7 @@ def parse_training_arguments():
 
     # 训练过程参数
     parser.add_argument("--max_train_steps", type=int, default=10000, help="总训练步数。")
-    parser.add_argument("--batch_size_train_per_device", type=int, default=25, help="每个GPU/CPU的训练批次大小。")
+    parser.add_argument("--batch_size_train_per_device", type=int, default=32, help="每个GPU/CPU的训练批次大小。")
     parser.add_argument("--learning_rate_main", type=float, help="主模型部分的学习率。")
     parser.add_argument("--learning_rate_encoder", type=float, help="MLM Encoder部分的学习率 (如果不同)。")
     parser.add_argument("--weight_decay", type=float, help="AdamW优化器的权重衰减。")
@@ -51,7 +51,7 @@ def parse_training_arguments():
     parser.add_argument("--adam_beta1", type=float, default=0.9)
     parser.add_argument("--adam_beta2", type=float, default=0.999)
     parser.add_argument("--adam_epsilon", type=float, default=1e-8)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=5, help="梯度累积步数。")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="梯度累积步数。")
 
 
     # 路径和日志参数

@@ -266,6 +266,7 @@ def main():
 
     # --- 12. 训练循环 ---
     logger.info("***** 开始训练 *****")
+    logger.info(f"  训练集步数 = {len(train_dataloader)}")
     logger.info(f"  总训练步数 = {args.max_train_steps}")
     logger.info(f"  每设备批次大小 = {args.batch_size_train_per_device}")
     logger.info(f"  总即时批次大小 (跨设备和梯度累积) = {args.batch_size_train_per_device * accelerator.num_processes * args.gradient_accumulation_steps}")

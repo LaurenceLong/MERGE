@@ -108,7 +108,7 @@ class MERGELanguageModel(PreTrainedModel):
         mask_picker_hidden_states = self.mask_picker_decoder(
             target_embeds=input_embeddings,
             # memory_embeds=input_embeddings, # 如果LlamaDecoder需要显式memory且用于自注意力
-            target_attention_mask=attention_mask
+            attention_mask=attention_mask
         )  # (B, L, H)
         keep_logits = self.keep_logits_head(mask_picker_hidden_states).squeeze(-1)  # (B, L)
 
@@ -180,7 +180,7 @@ class MERGELanguageModel(PreTrainedModel):
         pointer_decoder_hidden_states = self.pointer_inserter_decoder(
             target_embeds=skeleton_embeddings,
             # memory_embeds=skeleton_embeddings, # 如果需要显式memory
-            target_attention_mask=skeleton_attention_mask  # 屏蔽骨架中的padding token
+            attention_mask=skeleton_attention_mask  # 屏蔽骨架中的padding token
         )  # (B, max_skel_L, H)
         # (B, max_skel_L, max_pos_embed + 1)
         pointer_logits = self.pointer_logits_head(pointer_decoder_hidden_states)

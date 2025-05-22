@@ -351,14 +351,16 @@ class MERGELanguageModel(PreTrainedModel):
 
         # --- 9. 构建输出字典 (遵循原始模板) ---
         output_dict = {
-            "loss": total_loss,
-            "recon": loss_reconstruction.detach(),  # 使用 .detach() 获取无梯度版本用于记录
-            "comp": loss_compression.detach(),
-            "ptr": loss_pointer.detach(),
-            "r_keep": actual_keep_ratio.detach(),  # 实际保留比例
-            "temp": torch.tensor(current_temperature, device=device),  # 当前温度
-            # 可以添加其他有用的指标
-            "metrics_target_keep_ratio": torch.tensor(target_keep_ratio, device=device),
+            "total_loss": total_loss,
+            "loss_reconstruction": loss_reconstruction.detach(),
+            "loss_compression": loss_compression.detach(),
+            "loss_pointer": loss_pointer.detach(),
+            "actual_keep_ratio": actual_keep_ratio.detach(),
+            "current_temperature": torch.tensor(current_temperature, device=device),
+            "target_keep_ratio": torch.tensor(target_keep_ratio, device=device),
+            # 新添加的两个键：
+            "corrupted_input_ids_for_eval": corrupted_batch_input_ids,  # 构造后的损坏输入
+            "mlm_logits_for_eval": mlm_logits,  # MLM encoder产出的 logits
         }
         return output_dict
 

@@ -13,9 +13,9 @@ from tqdm.auto import tqdm  # 自动选择适合环境的tqdm (notebook, console
 from transformers import get_linear_schedule_with_warmup
 
 # 从本地merge包导入组件
-from merge_model.configs import MERGEModelConfig
-from merge_model.data import build_custom_tokenizer, collate_fn_for_merge
-from merge_model.model import MERGELanguageModel
+from .configs import MERGEModelConfig
+from .data import build_custom_tokenizer, collate_fn_for_merge
+from .model import MERGELanguageModel
 
 # 配置日志系统
 logging.basicConfig(

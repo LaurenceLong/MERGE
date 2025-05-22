@@ -4,7 +4,7 @@ import argparse
 import torch
 from transformers import AutoTokenizer
 
-from merge_model.model import MERGELanguageModel  # 确保 MERGE 在 PYTHONPATH
+from .model import MERGELanguageModel  # 确保 MERGE 在 PYTHONPATH
 
 
 def main():

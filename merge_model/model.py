@@ -6,9 +6,9 @@ from typing import Optional, Dict, Any
 
 from transformers import PreTrainedModel  # 用于利用 save_pretrained, from_pretrained 等
 
-from .configs import MERGEModelConfig
-from .utils import gumbel_noise, linear_anneal
-from .llama_components import LlamaDecoder, LlamaEncoder  # 你的LLaMA组件
+from merge_model.configs import MERGEModelConfig
+from merge_model.utils import gumbel_noise, linear_anneal
+from merge_model.llama_components import LlamaDecoder, LlamaEncoder  # 你的LLaMA组件
 
 logger = logging.getLogger(__name__)
 

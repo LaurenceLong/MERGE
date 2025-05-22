@@ -362,6 +362,7 @@ class MERGELanguageModel(PreTrainedModel):
             "corrupted_input_ids_for_eval": corrupted_batch_input_ids,  # 构造后的损坏输入
             "mlm_logits_for_eval": mlm_logits,  # MLM encoder产出的 logits
         }
+        print("output_dict:", output_dict)
         return output_dict
 
     # 如果需要一个 `generate` 方法 (例如用于demo中的文本生成)

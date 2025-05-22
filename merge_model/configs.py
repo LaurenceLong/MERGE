@@ -54,6 +54,22 @@ class MERGEModelConfig(PretrainedConfig):
     # 添加缺失的属性以兼容 PreTrainedModel 的初始化流程
     pruned_heads: dict = field(default_factory=dict) # <--- 添加这一行
 
+    # 添加这一行以捕获额外参数
+    def __init__(self, **kwargs):
+        # 首先从kwargs中提取我们已知的参数
+        known_keys = list(self.__dataclass_fields__.keys())
+        our_kwargs = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in known_keys}
+
+        # 调用父类的__init__来处理剩余的kwargs（如architectures等）
+        super().__init__(**kwargs)
+
+        # 设置我们自己的属性
+        for k, v in our_kwargs.items():
+            setattr(self, k, v)
+
+        # 确保所有必需字段都有值
+        self.__post_init__()
+
     def __post_init__(self):
         # 可以在这里进行一些参数的校验或后处理
         if self.intermediate_size is None:

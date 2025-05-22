@@ -435,7 +435,7 @@ def main():
 
         logger.info(f"保存最终模型到: {final_model_path}")
         unwrapped_model = accelerator.unwrap_model(model) # 获取原始模型
-        unwrapped_model.save_pretrained(final_model_path) # 保存模型权重和配置文件(model_config.json)
+        unwrapped_model.save_pretrained(final_model_path, safe_serialization=False) # 保存模型权重和配置文件(model_config.json)
 
         logger.info(f"保存最终tokenizer到: {final_model_path}")
         tokenizer.save_pretrained(final_model_path) # 在模型目录中也保存一份tokenizer

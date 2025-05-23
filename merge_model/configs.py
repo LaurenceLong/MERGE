@@ -1,88 +1,124 @@
 from dataclasses import dataclass, field
-from transformers import PretrainedConfig # 保持与HuggingFace生态的兼容性
+from transformers import PretrainedConfig
 
 @dataclass
 class MERGEModelConfig(PretrainedConfig):
-    """
-    MERGELanguageModel的配置类。
-    继承自PretrainedConfig以利用其save_pretrained/from_pretrained等功能。
-    """
-    model_type: str = "merge_custom_llama"
+    model_type: str = "merge_mdlm_llama"
 
-    # LLAMA架构参数 (你需要根据你的LLAMA实现调整这些名称和值)
+    # LLAMA架构参数
     vocab_size: int = 50257
     hidden_size: int = 768
-    intermediate_size: int = field(default_factory=lambda: 768 * 4) # LLaMA中通常是 (2/3 * 4 * H) * 2 / 2 = 1.33 * 4 * H, 调整这里
-    num_hidden_layers_decoder: int = 6  # 用于 dec1 (mask_picker) 和 dec2 (pointer_inserter)
-    num_hidden_layers_encoder: int = 6  # 用于主 MLM encoder
-    num_hidden_layers_default: int = 6  # 默认的decoder/encoder层数
+    intermediate_size: int = field(default_factory=lambda: 768 * 4)
+    num_hidden_layers_decoder: int = 6  # For LLAMAdec in M1
+    num_hidden_layers_encoder: int = 12 # For E_MDLM
+    num_hidden_layers_gap_encoder: int = 2 # For M2's GapEncoder (example)
     num_attention_heads: int = 12
-    max_seq_len: int = 256              # 最大序列长度
-    dropout_prob: float = 0.1           # Transformer层中的dropout概率
-    layer_norm_eps: float = 1e-5        # LayerNorm (或RMSNorm) 的 epsilon
+    max_seq_len: int = 256
+    dropout_prob: float = 0.1
+    layer_norm_eps: float = 1e-5
 
-    # 训练参数
-    learning_rate_main: float = 1e-4
-    learning_rate_encoder: float = 3e-5 # 如果encoder部分使用不同学习率
+    # E_MDLM specific
+    rope_theta: float = 10000.0 # For RoPE, if implemented
+
+    # Training parameters
+    learning_rate: float = 3e-4 # General learning rate
+    learning_rate_gate: float = None # Specific LR for Gate
     weight_decay: float = 0.01
     adam_beta1: float = 0.9
     adam_beta2: float = 0.999
     adam_epsilon: float = 1e-8
-    warmup_steps: int = 1000 # 注意：train.py 中使用的是 warmup_steps_ratio
-    max_train_steps: int = 10_000
+    warmup_steps_ratio: float = 0.05 # Used in train_end2end.py for scheduler
+    max_train_steps: int = 100_000 # Total training steps for annealing etc.
+    gradient_clip_val: float = 1.0
 
-    # MERGE 特定参数
-    keep_ratio_start: float = 0.7
-    keep_ratio_end: float = 0.3
-    temperature_start: float = 1.0      # Gumbel softmax 温度
-    temperature_end: float = 0.1
-    lambda_comp: float = 0.5            # 压缩损失权重
-    lambda_ptr: float = 0.05            # 指针损失权重
+    # MERGE × MDLM Scheme Parameters
+    # General
+    max_rounds_l: int = 6  # L_max in scheme
 
-    # Tokenizer 和路径参数
-    tokenizer_name_or_path: str = 'gpt2' # 用于初始化tokenizer的名称或路径
-    tokenizer_save_dir: str = "tokenizer_merge_custom" # 保存自定义tokenizer的目录
-    pad_token_id: int = -100 # 将由tokenizer设置, -100常用于CrossEntropyLoss的ignore_index
-    mask_token_id: int = -1  # 将由tokenizer设置
+    # Gate Parameters
+    gate_mlp_hidden_dim: int = 64 # Hidden dim for 2-layer MLP in Gate
+    gate_feature_dim: int = 0 # Will be determined by concat of features
+    round_emb_dim: int = 32
+    gate_tau_start: float = 2.0
+    gate_tau_end: float = 0.2
+    gate_tau_anneal_steps: int = 5000 # Example: 5 epochs if 1 epoch = 1000 steps
+    gate_low_conf_threshold_nats: float = 1.5 # τ_H for low_conf_ratio
 
-    # 其他参数
+    # Mask-Picker (M₁) Parameters
+    m1_ffn_intermediate_dim: int = field(default_factory=lambda: 768 * 2) # For FFN in M1 after LLAMAdec
+    k_del_ratio: float = 0.2
+    k_del_min: int = 1
+    k_del_max: int = 20
+    m1_tau_del_start: float = 2.0 # τ_del
+    m1_tau_del_end: float = 0.2
+    m1_tau_del_anneal_steps: int = 5000 # Example, sync with gate_tau_anneal_steps
+
+    # Mask-Inserter (M₂) Parameters
+    k_ins_target_ratio: float = 0.2 # Ratio for |Y*| - |S|
+    k_ins_min: int = 1
+    k_ins_max: int = 20
+    max_masks_per_insertion_round_m2: int = 8 # For stable Multinomial_ST (Tip 3)
+    gap_encoder_hidden_dim: int = hidden_size # Hidden dim for GapEncoder output
+
+    # Loss Weights (λ values)
+    lambda_gate_sparsity: float = 0.1   # λ_s
+    lambda_gate_reward: float = 0.2     # λ_c (reward for "sentence maturity improvement")
+    lambda_m1_entropy: float = 0.05     # λ_comp (KL(p_del || Ber(r_target)))
+    lambda_m2_entropy: float = 0.01     # λ_ins (Entropy(z_g))
+    
+    # Target for M₁ KL divergence (r_target in Ber(r_target))
+    # This is the desired average deletion proportion for M1
+    m1_target_deletion_ratio: float = 0.15 # Example: Corresponds to K_del_ratio, but for soft probs
+
+    # MDLM specific weighting for L_recon
+    # alpha_mdlm_t_factor: float = 1.0 # Factor for cos^2(pi*t/2) if needed, usually 1.0
+
+    # Tokenizer and Paths
+    tokenizer_name_or_path: str = 'gpt2'
+    tokenizer_save_dir: str = "tokenizer_merge_mdlm"
+    pad_token_id: int = -100 # Will be set by tokenizer
+    mask_token_id: int = -1  # Will be set by tokenizer
+    eos_token_id: int = -1 # Will be set
+    bos_token_id: int = -1 # Will be set
+
+    # Teacher Forcing
+    teacher_forcing_warmup_epochs: int = 10 # Epochs to use Y*
+    teacher_forcing_prob_decay_start_epoch: int = 10 # Epoch to start decaying Y* prob
+    teacher_forcing_prob_end_epoch: int = 20 # Epoch by which Y* prob is 0 (or min)
+    teacher_forcing_initial_prob: float = 1.0
+    teacher_forcing_final_prob: float = 0.0 # Probability of using Y* after decay
+
+    # Other
     seed: int = 42
     log_every_steps: int = 100
-    checkpoint_dir: str = "checkpoints_merge_custom" # 保存模型检查点的目录
-    initializer_range: float = 0.02 # 用于初始化权重的标准差
+    checkpoint_dir: str = "checkpoints_merge_mdlm"
+    initializer_range: float = 0.02
+    pruned_heads: dict = field(default_factory=dict)
 
-    # 添加缺失的属性以兼容 PreTrainedModel 的初始化流程
-    pruned_heads: dict = field(default_factory=dict) # <--- 添加这一行
+    # Pseudo-time condition for E_MDLM
+    pseudo_time_emb_dim: int = 64 # Embedding dim for mask_ratio
 
-    # 添加这一行以捕获额外参数
     def __init__(self, **kwargs):
-        # 首先从kwargs中提取我们已知的参数
         known_keys = list(self.__dataclass_fields__.keys())
         our_kwargs = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in known_keys}
-
-        # 调用父类的__init__来处理剩余的kwargs（如architectures等）
         super().__init__(**kwargs)
-
-        # 设置我们自己的属性
         for k, v in our_kwargs.items():
             setattr(self, k, v)
-
-        # 确保所有必需字段都有值
         self.__post_init__()
 
     def __post_init__(self):
-        # 可以在这里进行一些参数的校验或后处理
         if self.intermediate_size is None:
-            # LLaMA 2 的 intermediate_size 计算方式:
-            # multiple_of = 256
-            # ffn_dim_multiplier = 1.0 # or custom_ffn_dim_multiplier
-            # self.intermediate_size = int(ffn_dim_multiplier * self.hidden_size * 4 * 2 / 3)
-            # self.intermediate_size = multiple_of * ((self.intermediate_size + multiple_of - 1) // multiple_of)
-            # 简化版：
             self.intermediate_size = self.hidden_size * 4
+        if self.m1_ffn_intermediate_dim is None:
+            self.m1_ffn_intermediate_dim = self.hidden_size * 2
+        
+        # Calculate gate_feature_dim based on expected features if possible,
+        # or set it to a reasonable estimate.
+        # Features: H̄, margin, low_conf_ratio, ppl_self, round_emb
+        # Approx: 1 (entropy) + 1 (margin) + 1 (low_conf) + 1 (ppl) + round_emb_dim
+        self.gate_feature_dim = 4 + self.round_emb_dim
 
 
-# 使用示例:
+# Example:
 # config = MERGEModelConfig(vocab_size=32000, max_train_steps=50000)
 # print(config)
-

@@ -1,156 +1,164 @@
-# MERGE：Mask-Edit-Refine **G**ated **E**ncoder  
+下面方案有一份实现代码，请你检查代码是否存在问题？是否符合方案描述？
 
-一个统一「局部编辑 ↔ 自由生成」的并行序列建模框架。通过软/硬门控 `Gate` 在 **Edit Path**（删-插-填）和 **Generation Path**（插-填）之间自动切换，多轮循环式 Refinement + 早停推理，兼得低延迟与可控性。
+# MERGE：Mask-Edit-Refine **GE**neration
 
----
+下表先给出所选组件一览，随后分别阐述**模型结构 → 训练流程 → 推理流程 → 关键超参 & 实践细节**。
 
-## 1  记号
-
-| 记号          | 含义                                                |
-|-------------|---------------------------------------------------|
-| `X₀`        | 原始序列（空串 / Prompt / 草稿）                            |
-| `L`         | 最大循环轮数，训练 3-6 轮，推理可早停                             |
-| `D₁`        | Mask-Picker（删除器），Decoder-1（LLAMA组件）               |
-| `D₂`        | Mask-Inserter（插空器），Decoder-2（LLAMA组件）             |
-| `E`         | Transformer Encoder（参考LLAMA Decoder实现组件）          |
-| `H`         | MLM Head（分类层或共享词嵌入）                               |
-| `g_l∈(0,1)` | 第 `l` 轮门控标量，`g≈1` 选 **Edit**，`g≈0` 选 **Generate** |
-| `τ_edit`    | 判定门 0.5（训练可软采样）                                   |
+| 子模块                  | 采用方案                                            | 关键理由                                   |
+|----------------------|-------------------------------------------------|----------------------------------------|
+| Gate                 | 置信度统计 + 轮次嵌入 → 2-层 MLP → Gumbel-Sigmoid ST      | ● 输入与“句子已成熟度”强相关 ● 可微、梯度稳定             |
+| Mask-Picker (`M₁`)   | Soft Bottom-K 删除 + ST hard 分支                   | ● 与推理 Hard Bottom-K 对齐 ● `L_recon` 可回传 |
+| Mask-Inserter (`M₂`) | **方案 A：Hard Multinomial ST + Mixed Sequence**   | ● 推理零落差 ● `L_recon` 直达 `M₂` 梯度         |
+| 填充网络 (`E`)           | 12-L Transformer Encoder + MLM Head             | 处理软 / 混合序列                             |
+| 训练信号                 | L_recon + sparsity & reward Gate 正则 + M₁/M₂ 熵正则 | ● 全部来自端到端梯度，最简监督                       |
 
 ---
 
-## 2  训练流程（端到端反传，展开 *L* 轮）
+## 1. 模型结构
 
-```text
-X_0  = 原句 / 随机片段 / 空串            # teacher forcing 到 Y*
-E_-1 = E(X_0)                           # 仅用于 Gate_0 判定
-for l = 0 .. L-1:
+### 1.1 Gate
+```
+features = concat(
+mean_entropy(logits),# H̄
+mean_margin(p1-p2),# 置信度差
+low_conf_ratio(τ_H=1.5 nats),# 低置信比例
+self_ppl,# ppl_self
+round_emb(l) # 轮次嵌入
+) # dim ≈ 5–10
+g̃ = MLP2(features)# → ℝ
+g̃ = sigmoid(g̃)
+g_hard = ST(g̃, gumbel=True, τ)# τ 退火 2→0.2
+```
 
-    # ===== 1) 门控决策 =====
-    g_l = Gate(E_{l-1})   if l>0 else 0         # 第一轮固定走生成
-    edit = (g_l > τ_edit)                       # 软硬两用
+### 1.2 Mask-Picker `M₁`
 
-    # ===== 2) 删除阶段 =====
-    if edit:
-        p_keep = D₁(X_l)                        # 保留概率
-        m      = Bernoulli_ST(p_keep)           # ST-采样
-        S_l    = Drop(X_l, m)                   # skeleton
-    else:
-        S_l = X_l                               # 跳过删除
+1. token-wise score
+ `s_i = FFN(LLAMAdec(X_l))[i]`
+2. soft 删除权重
+ `p_del_i = σ(−s_i/τ_del)` (τ_del 同步退火)
+3. **Soft token**
+ `x̂_i = (1−p_del_i)·x_i + p_del_i·e[MASK]`
+4. **Hard skeleton (ST)**
+ ```
+ idx_del= BottomK_ST(s_i, K_del)
+ S_hard = X_l.delete(idx_del) # 长度 L−K
+ ```
 
-    # ===== 3) 插空阶段 =====
-    α_gap  = D₂(S_l)                            # gap scores
-    k_ins  = max(1, ‖X_l‖-‖S_l‖)                # 保序插位数
-    idx    = Pointer_ST(α_gap, k_ins)           # 可微 Top-k
-    Ŝ_l    = InsertMask(S_l, idx)               # 插入 [MASK]
+### 1.3 Mask-Inserter `M₂`(方案 A)
 
-    # ===== 4) 填充阶段 =====
-    E_l    = E(Ŝ_l)                             # 隐状态
-    X_{l+1}= Replace(Ŝ_l, argmax H(E_l))        # Teacher forcing
-endfor
+```
+h_gap = GapEncoder(S_hard)# 得到 G=L−K+1 个 gap 表征
+α_g = Linear(h_gap) # gap logits
+z_g = softmax(α_g)# 分布
+counts= Multinomial_ST(K_ins, z_g)# hard count (ST)
+Ŝ_hard= insert_masks(S_hard, counts)# 真实插空
+```
+
+### 1.4 Mixed Sequence构造
+```
+Ŝ_mixed = fuse(Ŝ_hard, x̂_soft)
+# 规则：若 token 为新插入 MASK → 用 e[MASK]
+# 否则取 x̂_soft 对应位置的向量
+```
+
+### 1.5 填充网络 `E`
+```
+logits, hidden = E(Ŝ_mixed , t_l) # t_l = current_mask_ratio
+```
+Transformer + RoPE，相邻轮次参数共享；输出同时供 Gate 下一轮决策。
+
+---
+
+## 2. 训练流程
+
+```python
+for l in range(L):
+# ------------ Gate ------------
+g_hard, g_soft = Gate(hidden_prev)# 首轮 g=0
+
+# ------------ Delete -----------
+if g_hard==1:# Edit path
+S_hard, x_soft = soft_bottomk_delete(X_l, K_del)
+else:# Generate path
+S_hard, x_soft = X_l, X_l# 无删除
+
+# ------------ Insert -----------
+K_ins = calc_k(|S_hard|) # 简单线性或上限20
+Ŝ_hard= M2_insert(S_hard, K_ins)
+
+# ------------ Fuse & Fill ------
+Ŝ_mix = fuse(Ŝ_hard, x_soft)
+logits, hidden = E(Ŝ_mix , t_l)
+
+# ------------ Loss -------------
+L_recon = weighted_CE(logits, Y*, t_l)# 仅 MASK 位
+L_gate= λ_s·g_soft + λ_c·g_soft·relu(ΔH̄) # sparsity+reward
+L_comp= λ_comp·KL(p_del ‖ Ber(r_target))
+L_ins = λ_ins·Entropy(z_g)
+loss= L_recon + L_gate + L_comp + L_ins
+loss.backward(); optim.step()
+
+X_l = teacher_force ? Y* : greedy_fill(Ŝ_hard, logits)
+hidden_prev = hidden.detach()
+```
+
+* **teacher forcing**：前 10 epoch 用 `Y*`，后续 0.5 概率采样自生成。
+* 退火：`τ_gate`、`τ_del` 线性 5 epoch → 0.2。
+* 梯度裁剪 1.0；AdamW lr 3e-4。
+
+---
+
+## 3. 推理流程
+
+```python
+X = prompt_or_empty()
+hidden_prev = zeros()
+for l in range(L_max):
+g = Gate_infer(hidden_prev) # τ_edit(l) = 0.4+0.1l
+if g: # Edit
+S = delete_bottomK(X, K_del)
+else: # Generate
+S = X
+K_ins = calc_k(|S|)
+Ŝ = insert_masks_generate(S, M2(S, K_ins))
+logits, hidden = E(Ŝ , t_infer(mask_ratio(Ŝ)))
+X_new, conf = greedy_fill(Ŝ, logits)
+
+if conf>0.9 or lev(X_new,X)<2 or l==L_max-1:
+break
+X, hidden_prev = X_new, hidden
+return detokenize(X_new)
 ```
 
 ---
 
-## 3  损失设计
+## 4. 关键超参
 
 ```
-1) 重建损失   L_recon = CE(X_L , Y*)                     # 最后一轮对齐目标
-2) 删除正则   L_comp  = KL(p_keep ‖ Ber(r_target(g_l)))  # 控制删除量
-3) 插空正则   L_ptr   = KL(softmax α_gap ‖ U_gap)        # 避免扎堆
-4) 门控成本   L_gate  = c · g_l                          # 触发编辑要付费
-5) 长度约束   R_len   = ‖S_l‖ / ‖X_l‖                    # 防止全删或不删
-总损失        L = L_recon + λ₁L_comp + λ₂L_ptr + λ₃L_gate + λ₄R_len
+L_max= 6
+K_del= round(0.15 · L)∈ [1,30]
+calc_k(|S|)= clamp(round(0.25·(|Y*|−|S|)), 1, 20)
+λ_s= 0.1 # Gate sparsity
+λ_c= 0.2 # Gate reward
+λ_comp = 0.05# 删除 KL
+λ_ins= 0.01# 插空熵正则
 ```
 
-经验系数：`λ₁=0.5，λ₂=0.5，λ₃=0.1，λ₄=0.1`；`c=0.05`。  
-梯度依托 Straight-Through / Gumbel-Softmax 透过离散采样回传；显存受限可用 Truncated-BPTT。
+---
+
+## 5. 实践 Tips
+
+1. **冻结顺序**
+ ① 先训练 `E`(full-mask MLM) 2-3 epoch → ② 打开 `M₁/M₂` → ③ 最后解冻 Gate。
+2. **显存节省**：软删除可在 embedding 层完成，无需新张量。
+3. **稳定 Multinomial_ST**：若 `K_ins>8`，把一次插空拆成多轮，每轮 ≤8，梯度噪声更小。
+4. **对齐混合**：`fuse` 函数应写成纯 `torch` 索引，确保 ST 的 `.grad_fn` 保留。
 
 ---
 
-## 4  模块实现
+## 6. 方案优势回顾
 
-| 模块 | 计算 | 细节 |
-| ---- | ---- | ---- |
-| Encoder `E` | `Ŝ→h∈ℝ^{n×d}` | 12-Layer Relative-Pos Transformer，轮间参数共享 |
-| MLM Head `H` | `h→log p_vocab` | 权重与嵌入 Tie-Weight |
-| 删除器 `D₁` | `h→p_keep` | `σ(FFN(h))`，一层 768→1 |
-| 插空器 `D₂` | `h_keep→α_gap` | Pointer Net：单层 Bi-GRU→dot attention |
-| 门控 `Gate` | `mean(h)→g` | `σ(wᵀ·LN(mean(h)))` |
-
----
-
-## 5  推理流程（早停版）
-
-```text
-X_0 = 用户输入 (可为空)
-for l = 0 .. L-1:
-
-    g_l   = Gate(E(X_l))                 # auto 模式
-    edit  = (mode == 'edit')      ? 1 : (mode == 'gen') ? 0 : (g_l > τ_edit)
-
-    # --- 删除 ---
-    if edit:
-        S_l = Drop(X_l, D₁(X_l) > 0.5)
-    else:
-        S_l = X_l
-
-    # --- 插空 ---
-    α_gap = D₂(S_l)
-    k     = max(1, round((|X_l|-|S_l|) * r))   # r≈1.0
-    idx   = topk(α_gap, k)
-    Ŝ_l   = InsertMask(S_l, idx)
-
-    # --- 填充 ---
-    X_{l+1}, conf = GreedyFill(Ŝ_l, E, H, return_confidence=True)
-
-    # --- 早停 ---
-    if conf>0.9 or LevDist(X_{l+1},X_l)<ε or l==L-1: break
-endfor
-return X_{l+1}
-```
-
-三种模式  
-• `mode='edit'` → 强制 `g=1`，只做局部润色  
-• `mode='gen'` → 强制 `g=0`，直接生成  
-• `mode='auto'` → `Gate` 自主决策
-
----
-
-## 6  训练技巧
-
-1. 两阶段温度：前 5 k 步 Gumbel 温度 τ=2，再线性降到 1。  
-2. 片段冻结：Encoder 前 6 层冻结 10 k 步 → 稳定预训练特征。  
-3. 噪声门控：训练早期 `g ← g + 𝒩(0,0.05)`，防止塌缩。  
-4. 动态轮数：`L_train ~ U(1,L)`，缓解暴露偏差。  
-5. 梯度裁剪 2.0；AdamW 3 e-5；batch 128；warm-up 5 %。
-
----
-
-## 7  配置与资源
-
-* max_len = 256  
-* 3 × 10⁵ 步（8×A100≈24 h）  
-* 推理平均 2.1 轮，22 k token/s → 比自回归 GPT-2 快 3×  
-
----
-
-## 8  消融实验
-
-1. 去掉 `Gate`（始终 Edit / 始终 Gen）  
-2. 只插不删（移除 `D₁`）  
-3. Top-k vs Pointer-Network 插空  
-4. 单轮 vs 多轮 (L=1/2/3/6)  
-5. 绝对 vs 相对位置编码对删除器影响  
-
----
-
-## 9  对比优势
-
-* 与 MaskGIT 相比：多了 **删除**，可显式编辑；  
-* 与 Levenshtein Transformer 相比：删除/插空概率 **一次并行** 预测，无需逐 token 交替；  
-* 与 自回归 GPT 相比：并行填充带来 **3× 速度提升**；门控使“润色 & 续写”**同一模型**完成。
-
----
-
-> MERGE 把 “删-插-填” 的可解释编辑路径与直接生成路径融合在一个循环式 Mask 语言模型中，可一键切换 *Edit / Generate / Auto*，适用于改写、摘要、对话及开放生成等场景。
+* **与推理同形**：`M₁` Hard Bottom-K、`M₂` Hard Multinomial ST 全程与部署一致。
+* **端到端可微**：Soft-Delete & ST 让 `L_recon` 的梯度到达所有子模块。
+* **训练信号简洁**：仅 `L_recon` + 小量正则，无需额外对齐标签。
+* **质量与效率兼顾**：Gate 自适应决定是否微调句子，避免无谓迭代；`E` 使用 Encoder 权重对高 mask 比例也稳健。

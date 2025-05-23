@@ -11,7 +11,7 @@ import sys
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 
 # 文件内容提取正则表达式
-head = "#" * 2
+head = "#" * 3
 FILE_PATTERN = "\n" + head + r" (.*?)[\r\n]+[.\r\n]*```.*?\n(.*?)```"
 
 

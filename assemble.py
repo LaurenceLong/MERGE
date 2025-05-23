@@ -205,7 +205,7 @@ def main():
     )
 
     # 3. 组装最终的 prompt
-    final_prompt = "\n--- Start ---"
+    final_prompt = "\n--- Start ---\n"
     final_prompt += f"# 项目总览\n\n```\n{project_structure}\n```\n---\n\n{files_content}"
 
     # 4. 打印或保存 prompt
